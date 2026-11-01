@@ -1,0 +1,31 @@
+import {test} from 'node:test';
+import assert from 'node:assert/strict';
+import {getPlatformProxy} from 'wrangler';
+import {readFile} from 'node:fs/promises';
+import {handle} from '../worker.js';
+test('admin sessions, contractor isolation, ratings privacy and shared uploads',async()=>{
+ const proxy=await getPlatformProxy({configPath:'wrangler.jsonc',persist:false});
+ try{const env={...proxy.env,ADMIN_PASSWORD:'test-only-not-production-password',SESSION_SECRET:'test-only-long-random-key-for-local-test'};
+ for(const sql of (await readFile('migrations/0001_initial.sql','utf8')).split(';').filter(x=>x.trim()))await env.DB.prepare(sql).run();
+ let cookie='';const call=(path,method='GET',body,extra={})=>handle(new Request('https://portal.example'+path,{method,headers:{...(cookie?{Cookie:cookie}:{}),...(body&&!(body instanceof FormData)?{'Content-Type':'application/json'}:{}),...extra},...(body?{body:body instanceof FormData?body:JSON.stringify(body)}:{})}),env);
+ assert.equal((await call('/api/portal')).status,401);
+ assert.equal((await call('/api/login','POST',{password:'incorrect'})).status,401);
+ const login=await call('/api/login','POST',{password:env.ADMIN_PASSWORD});assert.equal(login.status,200);cookie=login.headers.get('Set-Cookie').split(';')[0];assert(login.headers.get('Set-Cookie').includes('HttpOnly'));
+ const p=await (await call('/api/portal','POST',{kind:'project',data:{name:'Project A',open:true}})).json();
+ assert.equal((await call('/api/portal','POST',{kind:'project',data:{name:'CSRF'}},{Origin:'https://attacker.example'})).status,403);
+ cookie='';assert.equal((await (await call('/api/public')).json()).projects.length,1);
+ const c=await (await call('/api/register','POST',{name:'Company A',phone:'0500000000',project:p.id})).json();assert(c.access);
+ assert.equal((await call('/api/contractor')).status,401);
+ const a={'X-Contractor-Access':c.access};
+ const form=new FormData();form.set('file',new File(['private quote'],'quote.txt'));form.set('category','عرض سعر');
+ const uploaded=await call('/api/upload','POST',form,a);assert.equal(uploaded.status,200);const f=await uploaded.json();
+ assert.equal((await call('/api/download?id='+f.id)).status,403);
+ assert.equal(await (await call('/api/download?id='+f.id,'GET',undefined,a)).text(),'private quote');
+ const c2=await (await call('/api/register','POST',{name:'Company B',phone:'0500000001',project:p.id})).json();assert.equal((await call('/api/download?id='+f.id,'GET',undefined,{'X-Contractor-Access':c2.access})).status,403);
+ cookie=login.headers.get('Set-Cookie').split(';')[0];
+ const rated=await call('/api/portal','PATCH',{id:c.company.id,evaluation:{quality:20,schedule:18,safety:18,cooperation:18,documents:18},notes:'internal only'});assert.equal(rated.status,200);const rating=await rated.json();assert.equal(rating.data.rating,92);assert.equal(rating.data.classification,'A');
+ cookie='';const own=await (await call('/api/contractor','GET',undefined,a)).json();assert.equal(own.company.data.notes,undefined);assert.equal(own.company.data.rating,undefined);assert.equal(own.company.data.classification,undefined);
+ assert.equal((await call('/api/portal','PATCH',{id:c.company.id,status:'معتمد'},a)).status,401);
+ assert.equal((await call('/api/login','POST',{password:env.ADMIN_PASSWORD},{Cookie:cookie,Origin:'https://attacker.example'})).status,403);
+ }finally{await proxy.dispose();}
+});

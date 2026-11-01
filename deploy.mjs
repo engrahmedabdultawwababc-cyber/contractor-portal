@@ -1,0 +1,15 @@
+import {execFileSync} from 'node:child_process';
+import {readFileSync,writeFileSync,mkdirSync} from 'node:fs';
+import {resolve} from 'node:path';
+const cli=resolve('node_modules/wrangler/bin/wrangler.js');
+const config=JSON.parse(readFileSync('wrangler.jsonc','utf8'));
+const run=(args,stdio='inherit')=>execFileSync(process.execPath,[cli,...args],{stdio,encoding:'utf8',env:{...process.env,WRANGLER_SEND_METRICS:'false'}});
+run(['deploy']);
+const databases=JSON.parse(run(['d1','list','--json'],['ignore','pipe','inherit']));
+const db=databases.find(d=>d.name==='contractor-portal-db');
+if(!db)throw Error('Could not resolve the provisioned D1 database contractor-portal-db');
+mkdirSync('.wrangler',{recursive:true});
+const file=resolve('.wrangler/migration-config.json');
+writeFileSync(file,JSON.stringify({name:config.name,compatibility_date:config.compatibility_date,d1_databases:[{binding:'DB',database_name:db.name,database_id:db.uuid,migrations_dir:resolve('migrations')}]},null,2));
+run(['d1','migrations','apply','DB','--remote','--config',file]);
+console.log('Portal deployed and database migrations applied.');
