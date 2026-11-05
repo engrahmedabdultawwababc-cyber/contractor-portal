@@ -15,10 +15,6 @@
       "migrations_dir": "migrations"
     }
   ],
-  "r2_buckets": [
-    {
-      "binding": "BUCKET"
-    }
-  ],
-  "keep_vars": true
+  "keep_vars": true,
+  "workers_dev": true
 }
